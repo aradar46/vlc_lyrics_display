@@ -216,17 +216,28 @@ class LyricsOverlay(Gtk.ApplicationWindow):
         self.header_label.set_halign(Gtk.Align.CENTER)
         self.top_box.set_center_widget(self.header_label)
 
-        self.retry_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
-        self.retry_btn.add_css_class("icon-btn")
-        self.retry_btn.set_tooltip_text("Wrong or missing lyrics? Try another source (r)")
-        self.retry_btn.connect("clicked", lambda *_: self.show_next_lyrics())
-        self.top_box.set_start_widget(self.retry_btn)
+        def icon_button(icon, tooltip, on_click):
+            btn = Gtk.Button.new_from_icon_name(icon)
+            btn.add_css_class("icon-btn")
+            btn.set_tooltip_text(tooltip)
+            btn.set_can_focus(False)  # keep space/arrow keys for the window shortcuts
+            btn.connect("clicked", lambda *_: on_click())
+            return btn
 
-        self.close_btn = Gtk.Button.new_from_icon_name("window-close-symbolic")
-        self.close_btn.add_css_class("icon-btn")
-        self.close_btn.set_tooltip_text("Close (Esc / q)")
-        self.close_btn.connect("clicked", lambda *_: self.get_application().quit())
-        self.top_box.set_end_widget(self.close_btn)
+        # Left: player controls
+        controls = Gtk.Box(spacing=2)
+        controls.append(icon_button("media-skip-backward-symbolic", "Previous (←)", lambda: self.player_command("Previous")))
+        self.play_btn = icon_button("media-playback-start-symbolic", "Play / pause (space)", lambda: self.player_command("PlayPause"))
+        controls.append(self.play_btn)
+        controls.append(icon_button("media-skip-forward-symbolic", "Next (→)", lambda: self.player_command("Next")))
+        self.top_box.set_start_widget(controls)
+
+        # Right: retry lyrics, close
+        actions = Gtk.Box(spacing=2)
+        self.retry_btn = icon_button("view-refresh-symbolic", "Wrong or missing lyrics? Try another source (r)", self.show_next_lyrics)
+        actions.append(self.retry_btn)
+        actions.append(icon_button("window-close-symbolic", "Close (Esc / q)", lambda: self.get_application().quit()))
+        self.top_box.set_end_widget(actions)
 
         self.card.append(self.top_box)
 
@@ -279,7 +290,27 @@ class LyricsOverlay(Gtk.ApplicationWindow):
         if keyval == Gdk.KEY_r:
             self.show_next_lyrics()
             return True
+        command = {Gdk.KEY_space: "PlayPause", Gdk.KEY_Left: "Previous", Gdk.KEY_Right: "Next"}.get(keyval)
+        if command:
+            self.player_command(command)
+            return True
         return False
+
+    def player_command(self, method):
+        """Send Previous / PlayPause / Next to the player. Async so the UI never freezes."""
+        if self.active_player_name:
+            self.bus.call(
+                self.active_player_name,
+                "/org/mpris/MediaPlayer2",
+                "org.mpris.MediaPlayer2.Player",
+                method,
+                None,
+                None,
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None,
+                None,
+            )
 
     def find_mpris_player(self):
         """Finds running VLC or any MPRIS player."""
@@ -334,6 +365,11 @@ class LyricsOverlay(Gtk.ApplicationWindow):
         proxy = self.get_player_proxy(player_name)
         if not proxy:
             return True
+
+        # Show pause icon while playing, play icon otherwise
+        status = proxy.get_cached_property("PlaybackStatus")
+        playing = status is not None and status.unpack() == "Playing"
+        self.play_btn.set_icon_name("media-playback-pause-symbolic" if playing else "media-playback-start-symbolic")
 
         # Read metadata
         meta_prop = proxy.get_cached_property("Metadata")
